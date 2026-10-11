@@ -1,0 +1,25 @@
+{
+  "name": "訪問GPSメモ",
+  "short_name": "訪問GPSメモ",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f8f7",
+  "theme_color": "#12695f",
+  "description": "GPS軌跡記録と訪問先ピン保存、GPX/CSV書き出し",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

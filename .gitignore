@@ -1,0 +1,14 @@
+# Local records and backups must never be published
+*.gpx
+*.csv
+*.json
+*.zip
+.env
+.env.*
+*.pem
+*.key
+node_modules/
+backups/
+data/
+.DS_Store
+Thumbs.db
