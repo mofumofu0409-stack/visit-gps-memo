@@ -25,6 +25,8 @@
     <div class="stat-grid"><div><b id="distance">0.00</b><small>移動距離 km</small></div><div><b id="pointCount">0</b><small>記録点</small></div><div><b id="visitCount">0</b><small>訪問地点</small></div></div>
     <div id="message" class="message" role="status" aria-live="polite">「記録開始」を押してGPSを許可してください。</div>
     <div class="actions"><button id="startBtn" class="primary" type="button">● 記録開始</button><button id="pauseBtn" type="button" disabled>一時停止</button><button id="finishBtn" type="button" disabled>終了</button></div>
+    <label style="display:flex;align-items:center;gap:10px;margin:14px 0 4px;min-height:44px;font-weight:700"><input id="autoPinToggle" type="checkbox" style="width:22px;height:22px;flex:none" aria-describedby="autoPinHint" />3分停滞で自動ピン</label>
+    <div id="autoPinHint" class="hint">画面を開いて記録中のみ。半径30m以内で3分停滞すると1件保存します。信号待ち・休憩・渋滞も対象です。</div>
     <button id="visitBtn" class="visit-button" type="button">＋ ここを訪問先として保存</button>
     <div class="hint">訪問地点は「訪問01」「訪問02」…と自動採番。あとから目印メモを追加できます。</div>
   </section>
@@ -36,6 +38,6 @@
   </section>
   <section class="privacy"><h2>利用上の注意</h2><p>GPS座標・訪問番号・メモはこの端末のブラウザ内に保存されます。<strong>暗号化していないため、顧客名や個人情報は入力しないでください。</strong>GitHubにアップロードするのはアプリ本体だけで、記録されたGPSデータは自動ではアップロードされません。ただし背景地図の取得時、地図表示範囲と通信情報はOpenStreetMapのタイル配信元へ伝わります。</p><p>新しい公開URLでは古いURLの記録を引き継げません。終了後は必ずGPXとJSONを書き出してください。保存は端末・ブラウザ設定により消える場合があります。</p><p>配達先や人の記録は引き継ぎ先のルールと許可に従って扱い、外部公開しないでください。運転者は操作せず、安全に停車してから保存してください。</p><p>地図データ © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer noopener">OpenStreetMap contributors</a></p></section>
 </main>
-<script src="vendor/leaflet.js"></script><script src="app.js"></script>
+<script src="vendor/leaflet.js"></script><script src="auto-pin.js"></script><script src="app.js"></script>
 </body>
 </html>

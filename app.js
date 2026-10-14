@@ -6,6 +6,55 @@ let db=null;
 let data={sessions:[],activeId:null};
 let watchId=null, wakeLock=null, lastFix=null, map=null, pointMarker=null, visitsLayer=null, routeLayer=null;
 let changing=false, saveChain=Promise.resolve(), mapCenteredOnce=false;
+// Separate local metadata: session/backup schema and IndexedDB keys are unchanged.
+const AUTO_PIN_KEY='visit-gps-logger:auto-pin-v1';
+let autoPinEnabled=false, autoPinLocks=Object.create(null), autoPinStorageWarning=false;
+function loadAutoPinSettings(){
+ try{
+  const saved=JSON.parse(localStorage.getItem(AUTO_PIN_KEY)||'null');
+  autoPinEnabled=saved?.enabled===true;
+  if(saved?.locks && typeof saved.locks==='object' && !Array.isArray(saved.locks)){
+   for(const [id,lock] of Object.entries(saved.locks)){
+    if(lock && Number.isFinite(lock.lat)&&Math.abs(lock.lat)<=90&&Number.isFinite(lock.lng)&&Math.abs(lock.lng)<=180){
+     autoPinLocks[id]={lat:lock.lat,lng:lock.lng,automaticAt:Number.isFinite(lock.automaticAt)?lock.automaticAt:null,visitId:typeof lock.visitId==='string'?lock.visitId:null};
+    }
+   }
+  }
+ }catch(e){autoPinStorageWarning=true;}
+}
+function saveAutoPinSettings(){
+ try{localStorage.setItem(AUTO_PIN_KEY,JSON.stringify({enabled:autoPinEnabled,locks:autoPinLocks}));}
+ catch(e){autoPinStorageWarning=true;message('自動ピン設定を端末に保存できません。この画面内では使えますが、再読込後は設定を確認してください。');}
+}
+loadAutoPinSettings();
+const autoPinDetector=new AutoPinDetector(haversine,autoPinLocks,locks=>{autoPinLocks=locks;saveAutoPinSettings();});
+const autoPinSeededSessions=new Set();
+function seedAutoPinLock(s){
+ if(!s || autoPinSeededSessions.has(s.id))return;
+ autoPinSeededSessions.add(s.id);
+ if(autoPinDetector.locks[s.id])return;
+ const v=s.visits[s.visits.length-1];
+ if(validPosition(v))autoPinDetector.noteVisit(s.id,v);
+}
+function appendVisit(s,fix){
+ const v={id:'v-'+Date.now()+'-'+Math.floor(Math.random()*10000),lat:fix.lat,lng:fix.lng,accuracy:fix.accuracy,time:nowIso(),title:'訪問'+String(s.visits.length+1).padStart(2,'0'),memo:''};
+ s.visits.push(v);return v;
+}
+function checkAutoPin(fix){
+ const s=current();
+ if(!autoPinEnabled || !s || s.state!=='recording' || document.visibilityState!=='visible'){
+  autoPinDetector.reset();return;
+ }
+ if(changing){autoPinDetector.reset();return;}
+ seedAutoPinLock(s);
+ const representative=autoPinDetector.update(s.id,fix,Date.now());
+ if(!representative)return;
+ // Append and lock synchronously before persistence can yield to another GPS or button event.
+ const v=appendVisit(s,representative);
+ autoPinDetector.noteVisit(s.id,v,Date.now(),v.id);
+ persist();
+ message(`3分停滞を検出し、${v.title}を自動保存しました。`);
+}
 const formatTime = t => new Date(t).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 const formatDate = t => new Date(t).toLocaleString('ja-JP',{year:'numeric',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
 const nowIso = () => new Date().toISOString();
@@ -38,22 +87,27 @@ function renderMap(){if(!map)return;routeLayer.clearLayers();visitsLayer.clearLa
  if(lastFix){pointMarker=L.marker([lastFix.lat,lastFix.lng],{icon:L.divIcon({className:'',html:'<span class="gps-now"></span>',iconSize:[17,17],iconAnchor:[8,8]})}).addTo(map);}
 }
 function fitAll(){if(!map)return;const s=current(),coords=[...(s?.track||[]),...(s?.visits||[])].map(p=>[p.lat,p.lng]);if(lastFix)coords.push([lastFix.lat,lastFix.lng]);if(coords.length===0){message('表示できる位置がありません。GPSを取得してください。');return;}if(coords.length===1)map.setView(coords[0],17);else map.fitBounds(coords,{padding:[25,25],maxZoom:17});}
-function onPosition(pos){const fix={lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy:pos.coords.accuracy,time:new Date(pos.timestamp).toISOString()};if(!Number.isFinite(fix.lat)||!Number.isFinite(fix.lng)||!Number.isFinite(fix.accuracy)||fix.accuracy<0)return;lastFix=fix;$('gpsStatus').textContent=`GPS精度 約${Math.round(fix.accuracy)}m`;
+function onPosition(pos){if(!pos?.coords||!Number.isFinite(pos.timestamp)||Math.abs(pos.timestamp)>8640000000000000){autoPinDetector.reset();return;}const fix={lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy:pos.coords.accuracy,time:new Date(pos.timestamp).toISOString()};if(!Number.isFinite(fix.lat)||!Number.isFinite(fix.lng)||!Number.isFinite(fix.accuracy)||fix.accuracy<0||Math.abs(fix.lat)>90||Math.abs(fix.lng)>180){autoPinDetector.reset();return;}lastFix=fix;$('gpsStatus').textContent=`GPS精度 約${Math.round(fix.accuracy)}m`;
  const s=current();if(s&&s.state==='recording'&&fix.accuracy<=100){const prev=s.track[s.track.length-1];let keep=!prev;if(prev){const meters=haversine(prev,fix),delta=(Date.parse(fix.time)-Date.parse(prev.time))/1000;if(delta>120){s.segment+=1;keep=true;message('GPSが2分以上途切れたため、別の軌跡区間として記録しました。');}else if(delta>0&&meters/delta>65){message('不自然に大きいGPS位置の飛びを除外しました。');keep=false;}else keep=prev.segment!==s.segment || (delta>=3&&(meters>=8||delta>=15));}
  if(keep){s.track.push({...fix,segment:s.segment});persist();}}
+ checkAutoPin(fix);
  if(!mapCenteredOnce&&map){map.setView([fix.lat,fix.lng],16);mapCenteredOnce=true;}
  refresh();}
-function geolocationError(err){const msg=err?.code===1?'GPSの権限がありません。iPhoneの設定でSafariの位置情報を許可してください。':err?.code===2?'現在地を取得できません。GPS・電波状況を確認してください。':'GPS取得がタイムアウトしました。屋外で再試行してください。';$('gpsStatus').textContent='GPS取得失敗';message(msg);}
+function geolocationError(err){autoPinDetector.reset();const msg=err?.code===1?'GPSの権限がありません。iPhoneの設定でSafariの位置情報を許可してください。':err?.code===2?'現在地を取得できません。GPS・電波状況を確認してください。':'GPS取得がタイムアウトしました。屋外で再試行してください。';$('gpsStatus').textContent='GPS取得失敗';message(msg);}
 function locateOnce(){return new Promise((resolve,reject)=>{if(!navigator.geolocation){reject(new Error('このブラウザではGPSが使えません。HTTPSのSafariで開いてください。'));return;}navigator.geolocation.getCurrentPosition(resolve,reject,{enableHighAccuracy:true,timeout:20000,maximumAge:0});});}
 async function lockScreenOn(){try{if('wakeLock' in navigator&&document.visibilityState==='visible'){wakeLock=await navigator.wakeLock.request('screen');}}catch(e){/* optional browser-specific behavior */}}
 async function releaseWake(){if(wakeLock){try{await wakeLock.release();}catch(e){}wakeLock=null;}}
-function stopWatch(){if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;}releaseWake();}
-async function startRecording(){if(changing)return;const s=current();if(!s||s.state==='finished')return;changing=true;refresh();message('GPSを確認しています。位置情報へのアクセスを許可してください。');try{const p=await locateOnce();s.segment+=1;s.state='recording';onPosition(p);watchId=navigator.geolocation.watchPosition(onPosition,geolocationError,{enableHighAccuracy:true,maximumAge:0,timeout:25000});await lockScreenOn();await persist();message('記録中です。画面を閉じず、訪問先では安全に停車してから「ここを保存」を押してください。');}catch(e){if(e.code)geolocationError(e);else message(e.message||'記録開始に失敗しました。');}finally{changing=false;refresh();}}
+function stopWatch(){autoPinDetector.reset();if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;}releaseWake();}
+async function startRecording(){if(changing)return;autoPinDetector.reset();const s=current();if(!s||s.state==='finished')return;changing=true;refresh();message('GPSを確認しています。位置情報へのアクセスを許可してください。');try{const p=await locateOnce();s.segment+=1;s.state='recording';onPosition(p);watchId=navigator.geolocation.watchPosition(onPosition,geolocationError,{enableHighAccuracy:true,maximumAge:0,timeout:25000});await lockScreenOn();await persist();message('記録中です。画面を閉じず、訪問先では安全に停車してから「ここを保存」を押してください。');}catch(e){if(e.code)geolocationError(e);else message(e.message||'記録開始に失敗しました。');}finally{changing=false;refresh();}}
 async function pauseRecording(reason){const s=current();if(!s||s.state!=='recording')return;stopWatch();s.state='paused';await persist();refresh();message(reason||'一時停止しました。「記録再開」で続きから記録できます。');}
 async function finishRecording(){const s=current();if(!s||s.state==='finished')return;if(!confirm('GPS記録を終了しますか？ 終了後もGPX・CSVを出力できます。'))return;stopWatch();s.state='finished';await persist();refresh();message('記録を終了しました。GPXとJSONを必ず書き出してください。');}
 async function saveVisit(){if(changing)return;const s=current();if(!s||s.state==='finished')return;changing=true;refresh();try{let fix=lastFix;const age=fix?(Date.now()-Date.parse(fix.time)):Infinity;if(age>15000||!fix||fix.accuracy>100){message('訪問先の現在地を取得しています…');const p=await locateOnce();onPosition(p);fix=lastFix;}
  if(fix.accuracy>40&&!confirm(`現在地の誤差が約${Math.round(fix.accuracy)}mあります。正確な訪問先ではない可能性があります。ピンを保存しますか？`))return;
- const v={id:'v-'+Date.now()+'-'+Math.floor(Math.random()*10000),lat:fix.lat,lng:fix.lng,accuracy:fix.accuracy,time:nowIso(),title:'訪問'+String(s.visits.length+1).padStart(2,'0'),memo:''};s.visits.push(v);await persist();refresh();map?.setView([v.lat,v.lng],17);message(`${v.title}を保存しました。GPS誤差の目安は${Math.round(v.accuracy)}mです。`);
+ if(current()!==s||s.state==='finished'||document.visibilityState!=='visible')return;
+ if(autoPinDetector.justSavedAutomatically(s.id,fix,Date.now())){
+  message('この場所は直前に自動保存済みです。訪問先一覧を確認してください。');return;
+ }
+ const v=appendVisit(s,fix);autoPinDetector.noteVisit(s.id,v);await persist();refresh();map?.setView([v.lat,v.lng],17);message(`${v.title}を保存しました。GPS誤差の目安は${Math.round(v.accuracy)}mです。`);
  }catch(e){if(e.code)geolocationError(e);else message(e.message||'訪問先を保存できませんでした。');}finally{changing=false;refresh();}}
 function xml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));}
 function toGPX(s){let waypoints=s.visits.map(v=>`  <wpt lat="${v.lat}" lon="${v.lng}"><name>${xml(v.title)}</name><desc>${xml(v.memo||'')} GPS accuracy ~${Math.round(v.accuracy)}m</desc><time>${xml(v.time)}</time></wpt>`).join('\n');const segments=new Map();for(const p of s.track){if(!segments.has(p.segment))segments.set(p.segment,[]);segments.get(p.segment).push(p);}const trks=[...segments.values()].map(pts=>`    <trkseg>\n${pts.map(p=>`      <trkpt lat="${p.lat}" lon="${p.lng}"><time>${xml(p.time)}</time></trkpt>`).join('\n')}\n    </trkseg>`).join('\n');return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Visit GPS Memo v0.1" xmlns="http://www.topografix.com/GPX/1/1">\n  <metadata><name>${xml(s.name)}</name><time>${xml(s.created)}</time></metadata>\n${waypoints}\n  <trk><name>${xml(s.name)}</name>\n${trks}\n  </trk>\n</gpx>\n`;}
@@ -63,16 +117,22 @@ function download(name,content,type){const blob=new Blob([content],{type});const
 function exportFile(kind){const s=current();if(!s){message('記録がありません。');return;}const suffix=new Date(s.created).toLocaleDateString('sv-SE',{timeZone:'Asia/Tokyo'}).replaceAll('-','');let name=`visit_gps_${suffix}`;if(kind==='gpx'){download(name+'.gpx',toGPX(s),'application/gpx+xml');message('GPXを書き出しました。iPhoneの「ファイル」に保存してください。');}if(kind==='csv'){download(name+'_visits.csv',toCSV(s),'text/csv;charset=utf-8');message('訪問CSVを書き出しました。');}if(kind==='json'){download(name+'_backup.json',JSON.stringify({app:'visit-gps-logger',version:1,session:s},null,2),'application/json');message('復元用JSONを書き出しました。');}}
 function validPosition(p){return p&&typeof p==='object'&&Number.isFinite(p.lat)&&Math.abs(p.lat)<=90&&Number.isFinite(p.lng)&&Math.abs(p.lng)<=180&&Number.isFinite(p.accuracy)&&p.accuracy>=0&&p.accuracy<=100000&&typeof p.time==='string'&&!Number.isNaN(Date.parse(p.time));}
 async function restoreFile(file){if(!file||file.size>20000000)throw new Error('バックアップは20MB以下のJSONファイルを選んでください。');let raw;try{raw=JSON.parse(await file.text());}catch{throw new Error('JSONを読み取れません。');}if(raw.app!=='visit-gps-logger'||raw.version!==1||!raw.session)throw new Error('このアプリのバックアップではありません。');const x=raw.session;if(!Array.isArray(x.track)||x.track.length>100000||!Array.isArray(x.visits)||x.visits.length>20000||!x.track.every(validPosition)||!x.visits.every(validPosition))throw new Error('GPSデータ形式が正しくありません。');const s={id:'log-'+Date.now()+'-'+Math.floor(Math.random()*100000),name:String(x.name||'読込データ').slice(0,100),created:!Number.isNaN(Date.parse(x.created))?x.created:nowIso(),state:'paused',segment:x.track.reduce((max,p)=>Math.max(max,Number.isInteger(p.segment)&&p.segment>=0&&p.segment<100000?p.segment:0),0),track:x.track.map(p=>({lat:p.lat,lng:p.lng,accuracy:p.accuracy,time:p.time,segment:Number.isInteger(p.segment)?p.segment:0})),visits:x.visits.map((v,i)=>({id:'import-'+i,lat:v.lat,lng:v.lng,accuracy:v.accuracy,time:v.time,title:String(v.title||`訪問${i+1}`).slice(0,80),memo:String(v.memo||'').slice(0,120)}))};if(!confirm(`バックアップからGPS ${s.track.length}点・訪問 ${s.visits.length}件を新しい記録として追加しますか？`))return;stopWatch();data.sessions.unshift(s);data.activeId=s.id;mapCenteredOnce=false;lastFix=null;await persist();refresh();fitAll();message('バックアップを読み込みました。');}
-function wire(){ $('startBtn').addEventListener('click',startRecording);$('pauseBtn').addEventListener('click',()=>pauseRecording());$('finishBtn').addEventListener('click',finishRecording);$('visitBtn').addEventListener('click',saveVisit);$('centerBtn').addEventListener('click',async()=>{if(lastFix&&Date.now()-Date.parse(lastFix.time)<30000){map?.setView([lastFix.lat,lastFix.lng],17);return;}try{const p=await locateOnce();onPosition(p);map?.setView([p.coords.latitude,p.coords.longitude],17);}catch(e){geolocationError(e);}});$('fitBtn').addEventListener('click',fitAll);$('gpxBtn').addEventListener('click',()=>exportFile('gpx'));$('csvBtn').addEventListener('click',()=>exportFile('csv'));$('backupBtn').addEventListener('click',()=>exportFile('json'));
+function wire(){
+ $('autoPinToggle').checked=autoPinEnabled;
+ $('autoPinToggle').addEventListener('change',e=>{
+  autoPinEnabled=e.target.checked;autoPinDetector.reset();saveAutoPinSettings();
+  if(!autoPinStorageWarning)message(autoPinEnabled?'自動ピンをONにしました。記録中、半径30m以内で3分停滞すると保存します。':'自動ピンをOFFにしました。');
+ });
+ $('startBtn').addEventListener('click',startRecording);$('pauseBtn').addEventListener('click',()=>pauseRecording());$('finishBtn').addEventListener('click',finishRecording);$('visitBtn').addEventListener('click',saveVisit);$('centerBtn').addEventListener('click',async()=>{if(lastFix&&Date.now()-Date.parse(lastFix.time)<30000){map?.setView([lastFix.lat,lastFix.lng],17);return;}try{const p=await locateOnce();onPosition(p);map?.setView([p.coords.latitude,p.coords.longitude],17);}catch(e){geolocationError(e);}});$('fitBtn').addEventListener('click',fitAll);$('gpxBtn').addEventListener('click',()=>exportFile('gpx'));$('csvBtn').addEventListener('click',()=>exportFile('csv'));$('backupBtn').addEventListener('click',()=>exportFile('json'));
  $('restoreFile').addEventListener('change',async e=>{try{await restoreFile(e.target.files[0]);}catch(err){message(err.message);}finally{e.target.value='';}});
  $('sessionSelect').addEventListener('change',async e=>{const s=current();if(s?.state==='recording')await pauseRecording('記録を切り替えたため停止しました。');stopWatch();data.activeId=e.target.value;lastFix=null;mapCenteredOnce=false;await persist();refresh();fitAll();});
  $('newBtn').addEventListener('click',async()=>{if(current()?.state==='recording'&&!confirm('今のGPS記録を一時停止して、新しい記録を作りますか？'))return;stopWatch();const prior=current();if(prior?.state==='recording')prior.state='paused';makeSession();lastFix=null;mapCenteredOnce=false;await persist();refresh();message('新しい記録を作成しました。「記録開始」を押してください。');});
  $('deleteBtn').addEventListener('click',async()=>{const s=current();if(!s)return;if(!confirm('この記録のGPS軌跡と訪問地点をすべて削除します。必要なら先にGPXとJSONを書き出してください。削除しますか？'))return;stopWatch();data.sessions=data.sessions.filter(x=>x.id!==s.id);if(!data.sessions.length)makeSession();else data.activeId=data.sessions[0].id;lastFix=null;mapCenteredOnce=false;await persist();refresh();message('選択した記録を削除しました。');});
- document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&current()?.state==='recording')pauseRecording('アプリが非表示になったので安全のため一時停止しました。画面に戻ったら再開を押してください。');});
+ document.addEventListener('visibilitychange',()=>{autoPinDetector.reset();if(document.visibilityState==='hidden'&&current()?.state==='recording')pauseRecording('アプリが非表示になったので安全のため一時停止しました。画面に戻ったら再開を押してください。');});
  window.addEventListener('pagehide',()=>{stopWatch();const s=current();if(s?.state==='recording'){s.state='paused';persist();}});
 }
 async function init(){wire();if(!window.isSecureContext){message('GPS利用にはHTTPSが必要です。Netlifyのhttps://...URLで開いてください。');$('startBtn').disabled=true;return;}if(!('indexedDB' in window)){message('端末保存が使えません。Safariのプライベートブラウズ以外で開いてください。');$('startBtn').disabled=true;return;}
  try{db=await openDb();const existing=await readData();if(existing&&Array.isArray(existing.sessions)){data=existing;data.sessions=data.sessions.filter(s=>s&&Array.isArray(s.track)&&Array.isArray(s.visits));}if(!current())makeSession();const s=current();if(s.state==='recording'){s.state='paused';message('以前の記録を復元しました。画面を離れた間のGPSは未記録です。「記録再開」を押してください。');}await persist();}catch(e){console.error(e);message('端末ストレージを開けません。保存可能なSafariで開き直してください。');$('startBtn').disabled=true;return;}
- initMap();refresh();if(navigator.serviceWorker){navigator.serviceWorker.register('./sw.js').catch(()=>{});} }
+ seedAutoPinLock(current());initMap();refresh();if(autoPinStorageWarning)message('自動ピン設定を読み込めませんでした。設定を確認してください。');if(navigator.serviceWorker){navigator.serviceWorker.register('./sw.js').catch(()=>{});} }
 if(typeof module!=='undefined'&&module.exports)module.exports={haversine,toGPX,toCSV,validPosition,csvSafe};
 if(typeof window!=='undefined')window.addEventListener('DOMContentLoaded',init);
