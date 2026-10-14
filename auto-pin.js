@@ -43,7 +43,7 @@ class AutoPinDetector {
   const c=this.candidate,lat=fix.lat*Math.PI/180,lng=fix.lng*Math.PI/180;
   c.count++;c.x+=Math.cos(lat)*Math.cos(lng);c.y+=Math.cos(lat)*Math.sin(lng);c.z+=Math.sin(lat);
   c.accuracy=Math.max(c.accuracy,fix.accuracy);
-  if(t-c.start<180000 || receivedAt-c.receivedStart<180000)return null;
+  if(t-c.start<120000 || receivedAt-c.receivedStart<120000)return null;
   const representative={lat:Math.atan2(c.z,Math.hypot(c.x,c.y))*180/Math.PI,
    lng:Math.atan2(c.y,c.x)*180/Math.PI,accuracy:c.accuracy,time:fix.time};
   this.candidate=null;

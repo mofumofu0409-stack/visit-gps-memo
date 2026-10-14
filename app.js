@@ -53,7 +53,7 @@ function checkAutoPin(fix){
  const v=appendVisit(s,representative);
  autoPinDetector.noteVisit(s.id,v,Date.now(),v.id);
  persist();
- message(`3分停滞を検出し、${v.title}を自動保存しました。`);
+ message(`2分停滞を検出し、${v.title}を自動保存しました。`);
 }
 const formatTime = t => new Date(t).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 const formatDate = t => new Date(t).toLocaleString('ja-JP',{year:'numeric',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
@@ -121,7 +121,7 @@ function wire(){
  $('autoPinToggle').checked=autoPinEnabled;
  $('autoPinToggle').addEventListener('change',e=>{
   autoPinEnabled=e.target.checked;autoPinDetector.reset();saveAutoPinSettings();
-  if(!autoPinStorageWarning)message(autoPinEnabled?'自動ピンをONにしました。記録中、半径30m以内で3分停滞すると保存します。':'自動ピンをOFFにしました。');
+  if(!autoPinStorageWarning)message(autoPinEnabled?'自動ピンをONにしました。記録中、半径30m以内で2分停滞すると保存します。':'自動ピンをOFFにしました。');
  });
  $('startBtn').addEventListener('click',startRecording);$('pauseBtn').addEventListener('click',()=>pauseRecording());$('finishBtn').addEventListener('click',finishRecording);$('visitBtn').addEventListener('click',saveVisit);$('centerBtn').addEventListener('click',async()=>{if(lastFix&&Date.now()-Date.parse(lastFix.time)<30000){map?.setView([lastFix.lat,lastFix.lng],17);return;}try{const p=await locateOnce();onPosition(p);map?.setView([p.coords.latitude,p.coords.longitude],17);}catch(e){geolocationError(e);}});$('fitBtn').addEventListener('click',fitAll);$('gpxBtn').addEventListener('click',()=>exportFile('gpx'));$('csvBtn').addEventListener('click',()=>exportFile('csv'));$('backupBtn').addEventListener('click',()=>exportFile('json'));
  $('restoreFile').addEventListener('change',async e=>{try{await restoreFile(e.target.files[0]);}catch(err){message(err.message);}finally{e.target.value='';}});
